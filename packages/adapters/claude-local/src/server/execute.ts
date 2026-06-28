@@ -58,6 +58,7 @@ import {
 import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
+import { preflightBedrockCredentials } from "./bedrock-preflight.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -432,6 +433,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
+
+  // Bedrock fail-fast: validate AWS credentials are present and not expired
+  // before launching the CLI, so absent/expired creds surface as a clear typed
+  // adapter error at start rather than a cryptic mid-run STS 403 (MAS-148/151).
+  if (isBedrockAuth(effectiveEnv)) {
+    const preflight = await preflightBedrockCredentials();
+    if (!preflight.ok) {
+      await onLog("stderr", `[paperclip] ${preflight.errorMessage}\n`);
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage: preflight.errorMessage,
+        errorCode: preflight.errorCode,
+        biller: "aws_bedrock",
+        billingType,
+        provider: "anthropic",
+      };
+    }
+  }
+
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
